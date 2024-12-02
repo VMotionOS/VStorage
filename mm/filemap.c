@@ -2308,7 +2308,12 @@ static void filemap_get_read_batch(struct address_space *mapping,
 {
 	XA_STATE(xas, &mapping->i_pages, index);
 	struct folio *folio;
-
+	if (mapping_use_distributed_support(mapping)) {
+		// int ret = perform_udp_request();
+        // if (ret < 0) {
+        //     printk(KERN_ERR "Remote: UDP request failed with error %d\n", ret);
+        // }
+	}
 	rcu_read_lock();
 	for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
 		if (xas_retry(&xas, folio))
@@ -2611,6 +2616,19 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 
 	iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
 	folio_batch_init(&fbatch);
+
+	char *tmp_path;
+    char path_buf[256]; 
+	tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
+
+	if (!IS_ERR(tmp_path) && strstr(tmp_path, "load.sh") != NULL) {
+		if (filp->f_flags & O_REMOTE) {
+			printk(KERN_INFO "Remote: mapping changed to remote");
+			mapping_set_distributed_support(mapping);
+		} else {
+			printk(KERN_INFO "Remote: Received file, flags: %o", filp->f_flags);
+		}
+	}
 
 	do {
 		cond_resched();
