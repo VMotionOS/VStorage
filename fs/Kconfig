@@ -25,6 +25,10 @@ config FS_STACK
 config BUFFER_HEAD
 	bool
 
+config REMOTE_STORAGE
+	bool "Enable Remote Storage"
+	default y
+
 # old blockdev_direct_IO implementation.  Use iomap for new code instead
 config LEGACY_DIRECT_IO
 	depends on BUFFER_HEAD

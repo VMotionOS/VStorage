@@ -2309,10 +2309,10 @@ static void filemap_get_read_batch(struct address_space *mapping,
 	XA_STATE(xas, &mapping->i_pages, index);
 	struct folio *folio;
 	if (mapping_use_distributed_support(mapping)) {
-		// int ret = perform_udp_request();
-        // if (ret < 0) {
-        //     printk(KERN_ERR "Remote: UDP request failed with error %d\n", ret);
-        // }
+		int ret = call_remote_storage();
+        if (ret < 0) {
+            printk(KERN_ERR "Remote: UDP request failed with error %d\n", ret);
+        }
 	}
 	rcu_read_lock();
 	for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
