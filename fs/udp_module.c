@@ -34,11 +34,6 @@ static int remote_storage_init(void) {
     remote_addr.sin_family = AF_INET;
     remote_addr.sin_port = htons(DEST_PORT); // Set destination port
     remote_addr.sin_addr.s_addr = in_aton(DEST_IP);
-    // ret = in4_pton(DEST_IP, -1, (u8 *)&remote_addr.sin_addr.s_addr, '\0', NULL); // Convert IP address
-    // if (ret == 0) {
-    //     printk(KERN_ERR "UDP Client: Invalid IP address format\n");
-    //     return -EINVAL;
-    // }
 
     printk(KERN_INFO "UDP Client: Destination address set to %s:%d\n", DEST_IP, DEST_PORT);
 
@@ -50,8 +45,8 @@ static void remote_storage_exit(void) {
     printk(KERN_INFO "Network module unloaded\n");
 }
 
-int call_remote_storage(void) {
-    char *data = "Remote: Hello, from kernel space!";
+int call_remote_storage(char* filename) {
+    char *data = filename;
     size_t data_len = strlen(data);
     int ret = 0;
 
@@ -78,16 +73,32 @@ int call_remote_storage(void) {
         printk(KERN_INFO "Remote: UDP Client: Successfully sent %d bytes to %s:%d\n", ret, DEST_IP, DEST_PORT);
     }
 
+
+    char* buffer;
+    buffer = kmalloc(1024, GFP_KERNEL);
+    if (!buffer) {
+        printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
+        return -ENOMEM;
+    }
+    memset(buffer, 0, 1024);
+
+    iov.iov_base = buffer;
+    iov.iov_len = 1024;
+
+    ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, MSG_WAITALL);
+    if (ret < 0 && ret != -EAGAIN) {
+        printk(KERN_ERR "Remote: kernel_recvmsg failed: %d\n", ret);
+        // Handle error
+    } else {
+        if (ret > 0) {
+            buffer[ret] = '\0';
+            pr_info("Remote: Received message: %s\n", buffer);
+        }
+    }
     // Step 4: Clean up the socket
     remote_storage_exit();
     printk(KERN_INFO "Remote: UDP Client: Socket released\n");
 
-
-    // ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, MSG_DONTWAIT);
-    // if (ret < 0 && ret != -EAGAIN) {
-    //     printk(KERN_ERR "kernel_recvmsg failed: %d\n", ret);
-    //     // Handle error
-    // }
     return 0;
 }
 EXPORT_SYMBOL(call_remote_storage);

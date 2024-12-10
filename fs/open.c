@@ -1208,7 +1208,7 @@ inline struct open_how build_open_how(int flags, umode_t mode)
 	if (how.flags & O_PATH)
 		how.flags &= O_PATH_FLAGS;
 	/* Modes should only be set for create-like flags. */
-	if (!WILL_CREATE(how.flags))
+	if (!WILL_CREATE(how.flags) /*|| how.flags & O_REMOTE)*/)
 		how.mode = 0;
 	return how;
 }

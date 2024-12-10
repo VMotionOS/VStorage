@@ -2308,12 +2308,7 @@ static void filemap_get_read_batch(struct address_space *mapping,
 {
 	XA_STATE(xas, &mapping->i_pages, index);
 	struct folio *folio;
-	if (mapping_use_distributed_support(mapping)) {
-		int ret = call_remote_storage();
-        if (ret < 0) {
-            printk(KERN_ERR "Remote: UDP request failed with error %d\n", ret);
-        }
-	}
+
 	rcu_read_lock();
 	for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
 		if (xas_retry(&xas, folio))
@@ -2525,21 +2520,42 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
 	struct folio *folio;
 	int err = 0;
 
+	char *tmp_path;
+    char path_buf[256]; 
+	int printedd = 0;
+	tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
+
+	if (!IS_ERR(tmp_path) && strstr(tmp_path, "mamad.sh") != NULL) {
+		printk(KERN_INFO "Remote: temp found");
+		printedd = 1;
+	}
+
 	/* "last_index" is the index of the page beyond the end of the read */
 	last_index = DIV_ROUND_UP(iocb->ki_pos + count, PAGE_SIZE);
 retry:
 	if (fatal_signal_pending(current))
 		return -EINTR;
 
+	if (printedd) printk(KERN_INFO "Remote: Before page cache1");
 	filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+	if (printedd) printk(KERN_INFO "Remote: Affteerrr page cache1");
 	if (!folio_batch_count(fbatch)) {
+		if (printedd) printk(KERN_INFO "Remote: READAHEAD");
+		/*If not in page cache and remote, send request*/
+		if (filp->f_flags & O_REMOTE) {
+			call_remote_storage("load.sh");
+		}
+		
 		if (iocb->ki_flags & IOCB_NOIO)
 			return -EAGAIN;
 		page_cache_sync_readahead(mapping, ra, filp, index,
 				last_index - index);
+		if (printedd) printk(KERN_INFO "Remote: Affteerrr readahead");
 		filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+		if (printedd) printk(KERN_INFO "Remote: Affteerrr page cache222");
 	}
 	if (!folio_batch_count(fbatch)) {
+		if (printedd) printk(KERN_INFO "Remote: Inside reaad disk");
 		if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
 			return -EAGAIN;
 		err = filemap_create_folio(filp, mapping,
@@ -2621,7 +2637,7 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
     char path_buf[256]; 
 	tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
 
-	if (!IS_ERR(tmp_path) && strstr(tmp_path, "load.sh") != NULL) {
+	if (!IS_ERR(tmp_path) && strstr(tmp_path, "mamad.sh") != NULL) {
 		if (filp->f_flags & O_REMOTE) {
 			printk(KERN_INFO "Remote: mapping changed to remote");
 			mapping_set_distributed_support(mapping);
