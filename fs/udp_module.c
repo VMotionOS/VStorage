@@ -45,8 +45,14 @@ static void remote_storage_exit(void) {
     printk(KERN_INFO "Network module unloaded\n");
 }
 
-int call_remote_storage(char* filename) {
-    char *data = filename;
+int call_remote_storage(char* filename, size_t size, unsigned long index) {
+    char *data;
+    data = kmalloc(1024, GFP_KERNEL);
+    if (!data) {
+        printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
+        return -ENOMEM;
+    }
+    sprintf(data, "%s,%ld,%lu", filename, size, index);
     size_t data_len = strlen(data);
     int ret = 0;
 
@@ -72,6 +78,7 @@ int call_remote_storage(char* filename) {
     } else {
         printk(KERN_INFO "Remote: UDP Client: Successfully sent %d bytes to %s:%d\n", ret, DEST_IP, DEST_PORT);
     }
+    kfree(data);
 
 
     char* buffer;
@@ -95,6 +102,7 @@ int call_remote_storage(char* filename) {
             pr_info("Remote: Received message: %s\n", buffer);
         }
     }
+    kfree(buffer);
     // Step 4: Clean up the socket
     remote_storage_exit();
     printk(KERN_INFO "Remote: UDP Client: Socket released\n");

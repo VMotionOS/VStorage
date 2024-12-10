@@ -2543,7 +2543,7 @@ retry:
 		if (printedd) printk(KERN_INFO "Remote: READAHEAD");
 		/*If not in page cache and remote, send request*/
 		if (filp->f_flags & O_REMOTE) {
-			call_remote_storage("load.sh");
+			call_remote_storage("load.sh", count, index);
 		}
 		
 		if (iocb->ki_flags & IOCB_NOIO)
