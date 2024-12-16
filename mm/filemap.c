@@ -2509,6 +2509,42 @@ static int filemap_readahead(struct kiocb *iocb, struct file *file,
 	return 0;
 }
 
+static int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char* buf) 
+{
+	struct address_space *mapping = inode->i_mapping;
+	const struct address_space_operations *aops = mapping->a_ops;
+
+	if (pos + count > inode->i_sb->s_maxbytes)
+		return -EFBIG;
+
+	while (count) {
+		size_t n = min_t(size_t, count,
+				 PAGE_SIZE - offset_in_page(pos));
+		struct page *page;
+		void *fsdata = NULL;
+		int res;
+		pr_info("Before write begin\n");
+		res = aops->write_begin(NULL, mapping, pos, n, &page, &fsdata);
+		if (res)
+			return res;
+
+		memcpy_to_page(page, offset_in_page(pos), buf, n);
+
+		res = aops->write_end(NULL, mapping, pos, n, n, page, fsdata);
+		pr_info("After write begin\n");
+		if (res < 0)
+			return res;
+		if (res != n)
+			return -EIO;
+
+		buf += n;
+		pos += n;
+		count -= n;
+	}
+	return 0;
+}
+
+
 static int filemap_get_pages(struct kiocb *iocb, size_t count,
 		struct folio_batch *fbatch, bool need_uptodate)
 {
@@ -2543,7 +2579,22 @@ retry:
 		if (printedd) printk(KERN_INFO "Remote: READAHEAD");
 		/*If not in page cache and remote, send request*/
 		if (filp->f_flags & O_REMOTE) {
-			call_remote_storage("load.sh", count, index);
+			char* buffer;
+			// char* buffer;
+			buffer = kmalloc(1024, GFP_KERNEL);
+			if (!buffer) {
+				printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
+				return -ENOMEM;
+			}
+			memset(buffer, 0, 1024);
+
+			int ret = 0;
+			ret = call_remote_storage("load.sh", count, index, buffer);
+			if (ret >= 0) {
+				struct inode *inode = filp->f_inode;
+				//if no error, write to page cache
+				write_remote_to_pagecache(inode, index, count, buffer);
+			}
 		}
 		
 		if (iocb->ki_flags & IOCB_NOIO)

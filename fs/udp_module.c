@@ -20,7 +20,7 @@ struct msghdr msg = {0};
 struct kvec iov;
 
 // int perform_udp_request(void);
-
+/*
 static int write_file_from_kernel(const char *path, const char *data, size_t size)
 {
     struct file *filp;
@@ -49,6 +49,7 @@ static int write_file_from_kernel(const char *path, const char *data, size_t siz
 
     return 0;
 }
+*/
 
 static int remote_storage_init(void) {
     printk(KERN_INFO "Network module loaded\n");
@@ -78,7 +79,7 @@ static void remote_storage_exit(void) {
     printk(KERN_INFO "Network module unloaded\n");
 }
 
-int call_remote_storage(char* filename, size_t size, unsigned long index) {
+int call_remote_storage(char* filename, size_t size, unsigned long index, char* buffer) {
     char *data;
     data = kmalloc(1024, GFP_KERNEL);
     if (!data) {
@@ -113,31 +114,23 @@ int call_remote_storage(char* filename, size_t size, unsigned long index) {
     }
     kfree(data);
 
-
-    char* buffer;
-    buffer = kmalloc(1024, GFP_KERNEL);
-    if (!buffer) {
-        printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
-        return -ENOMEM;
-    }
-    memset(buffer, 0, 1024);
-
     iov.iov_base = buffer;
     iov.iov_len = 1024;
 
     ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, MSG_WAITALL);
     if (ret < 0 && ret != -EAGAIN) {
         printk(KERN_ERR "Remote: kernel_recvmsg failed: %d\n", ret);
-        // Handle error
+        return ret;
     } else {
         if (ret > 0) {
             buffer[ret] = '\0';
             pr_info("Remote: Received message: %s\n", buffer);
-
-            write_file_from_kernel("/tmp/load.sh", buffer, size);
+            // char* path = "/tmp/";
+            // strcat(path, filename);
+            // write_file_from_kernel(path, buffer, size);
         }
     }
-    kfree(buffer);
+    // kfree(buffer);
     // Step 4: Clean up the socket
     remote_storage_exit();
     printk(KERN_INFO "Remote: UDP Client: Socket released\n");
