@@ -2582,7 +2582,14 @@ retry:
 				filename++; 
 			else 
 				filename = tmp_path; 
-			err = call_remote_storage(filename, count, index, buffer);
+			struct remote_request req = {
+				.filename=filename,
+				.size=count,
+				.index=index,
+				.buffer=buffer,
+				.operator='r'
+			};
+			err = call_remote_storage(req);
 			if (err >= 0) {
 				struct inode *inode = filp->f_inode;
 				//if no error, write to page cache

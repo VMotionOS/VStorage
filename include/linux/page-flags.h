@@ -187,6 +187,12 @@ enum pageflags {
 	PG_large_rmappable = PG_workingset, /* anon or file-backed */
 };
 
+enum pagestates {
+	shared, 
+	modified,
+	invalid
+};
+
 #define PAGEFLAGS_MASK		((1UL << NR_PAGEFLAGS) - 1)
 
 #ifndef __GENERATING_BOUNDS_H

@@ -3009,8 +3009,23 @@ extern ssize_t kernel_write(struct file *, const void *, size_t, loff_t *);
 extern ssize_t __kernel_write(struct file *, const void *, size_t, loff_t *);
 extern struct file * open_exec(const char *);
 
+/*Remote structs*/
+
+struct remote_request {
+	char operator;
+	char* filename;
+	loff_t index;
+	size_t size;
+	char* buffer;
+};
+
+struct remote_response {
+	size_t size;
+	char* buffer;
+};
+
 /*fs/udp_module.c  -- fs support for remote*/
-extern int call_remote_storage(char* filename, size_t size, unsigned long index, char* buffer);
+extern int call_remote_storage(struct remote_request request);
  
 /* fs/dcache.c -- generic fs support functions */
 extern bool is_subdir(struct dentry *, struct dentry *);

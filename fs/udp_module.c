@@ -41,14 +41,14 @@ static void remote_storage_exit(void) {
     printk(KERN_INFO "Network module unloaded\n");
 }
 
-int call_remote_storage(char* filename, size_t size, unsigned long index, char* buffer) {
+int call_remote_storage(struct remote_request request) {
     char *data;
     data = kmalloc(1024, GFP_KERNEL);
     if (!data) {
         printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
         return -ENOMEM;
     }
-    sprintf(data, "%s,%ld,%lu", filename, size, index);
+    sprintf(data, "%s,%ld,%llu,%c", request.filename, request.size, request.index, request.operator);
     size_t data_len = strlen(data);
     int ret = 0;
 
@@ -73,7 +73,7 @@ int call_remote_storage(char* filename, size_t size, unsigned long index, char* 
         goto error;
     }
 
-    iov.iov_base = buffer;
+    iov.iov_base = request.buffer;
     iov.iov_len = 1024;
 
     ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, MSG_WAITALL);
@@ -82,7 +82,7 @@ int call_remote_storage(char* filename, size_t size, unsigned long index, char* 
         goto error;
     } else {
         if (ret > 0) {
-            buffer[ret] = '\0';
+            request.buffer[ret] = '\0';
         }
     }
 error:
