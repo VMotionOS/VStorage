@@ -2463,7 +2463,7 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 	}
 	folio_batch_init(&fbatch);
 	while (index <= end) {
-		nr_folios = filemap_get_folios_tag(mapping, &index, end,
+		nr_folios = filemap_get_folios_tag_remote(mapping, &index, end,
 				tag, &fbatch);
 		if (nr_folios == 0)
 			break;
@@ -2924,6 +2924,30 @@ static int ext4_nonda_switch(struct super_block *sb)
 	return 0;
 }
 
+// static char *get_file_name_from_inode(struct inode *inode)
+// {
+//     struct dentry *dentry;
+//     struct qstr dname;
+//     char *filename = NULL;
+
+//     /* First, get the dentry for the inode */
+//     dentry = d_find_any_alias(inode);
+//     if (dentry) {
+//         /* We have found the dentry, now get the filename */
+//         dname = dentry->d_name;
+        
+//         /* Allocate memory for the filename and copy it */
+//         filename = kzalloc(dname.len + 1, GFP_KERNEL);
+//         if (filename) {
+//             memcpy(filename, dname.name, dname.len);
+//             filename[dname.len] = '\0'; // Null-terminate the string
+//         }
+//         dput(dentry);  // Don't forget to release the reference to the dentry
+//     }
+
+//     return filename;
+// }
+
 static int ext4_da_write_begin(struct file *file, struct address_space *mapping,
 			       loff_t pos, unsigned len,
 			       struct page **pagep, void **fsdata)
@@ -2937,7 +2961,7 @@ static int ext4_da_write_begin(struct file *file, struct address_space *mapping,
 		return -EIO;
 
 	index = pos >> PAGE_SHIFT;
-
+	
 	if (ext4_nonda_switch(inode->i_sb) || ext4_verity_in_progress(inode)) {
 		*fsdata = (void *)FALL_BACK_TO_NONDELALLOC;
 		return ext4_write_begin(file, mapping, pos,

@@ -466,6 +466,7 @@ extern const struct address_space_operations empty_aops;
 struct address_space {
 	struct inode		*host;
 	struct xarray		i_pages;
+	struct xarray		pages_status;
 	struct rw_semaphore	invalidate_lock;
 	gfp_t			gfp_mask;
 	atomic_t		i_mmap_writable;
@@ -3024,9 +3025,21 @@ struct remote_response {
 	char* buffer;
 };
 
+enum page_status {
+	SHARED_PAGE=1,
+	MODIFIED,
+	INVALIDATE_PAGE
+};
+
 /*fs/udp_module.c  -- fs support for remote*/
 extern int call_remote_storage(struct remote_request request);
- 
+
+/*fs/filemap.c  -- fs support for changing to INVALIDATE*/
+extern int remote_invalidate_folio(struct address_space *mapping, pgoff_t index);
+
+/*fs/filemap.c  -- fs support for writing string into pagecache*/
+extern int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char* buf); 
+
 /* fs/dcache.c -- generic fs support functions */
 extern bool is_subdir(struct dentry *, struct dentry *);
 extern bool path_is_under(const struct path *, const struct path *);

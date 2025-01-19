@@ -38,6 +38,7 @@ static int remote_storage_init(void) {
 
 static void remote_storage_exit(void) {
     sock_release(sock);
+    if (sock) sock = NULL;
     printk(KERN_INFO "Network module unloaded\n");
 }
 
@@ -48,18 +49,23 @@ int call_remote_storage(struct remote_request request) {
         printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
         return -ENOMEM;
     }
-    sprintf(data, "%s,%ld,%llu,%c", request.filename, request.size, request.index, request.operator);
+    sprintf(data, "%s,%ld,%llu,%c,%s", request.filename, request.size,
+             request.index, request.operator, request.buffer[0] == '\0' ? "\0" : request.buffer);
+
+    printk(KERN_INFO "Remote: sending data: %s\n", data);
     size_t data_len = strlen(data);
     int ret = 0;
 
     //Initialize the socket
     if (!sock) {
+        printk(KERN_INFO "Socket not initialized \n");
         ret = remote_storage_init();
         if (ret < 0) {
             printk(KERN_ERR "Remote: UDP Client: Failed to initialize socket, error %d\n", ret);
             return ret;
         }
     }
+    printk(KERN_INFO "After Socker Initialization \n");
 
     iov.iov_base = data; // Message data
     iov.iov_len = data_len;
@@ -68,13 +74,15 @@ int call_remote_storage(struct remote_request request) {
     msg.msg_namelen = sizeof(remote_addr);
 
     ret = kernel_sendmsg(sock, &msg, &iov, 1, data_len);
+    pr_info("Remote: Sent message \n");
+
     if (ret < 0) {
         printk(KERN_ERR "Remote: UDP Client: Failed to send message, error %d\n", ret);
         goto error;
     }
 
     iov.iov_base = request.buffer;
-    iov.iov_len = 1024;
+    iov.iov_len = 16;
 
     ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, MSG_WAITALL);
     if (ret < 0 && ret != -EAGAIN) {

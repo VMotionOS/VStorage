@@ -48,6 +48,7 @@
 #include <linux/rcupdate_wait.h>
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
+#include <linux/highmem.h>
 #include "internal.h"
 
 #define CREATE_TRACE_POINTS
@@ -61,6 +62,8 @@
 #include <asm/mman.h>
 
 #include "swap.h"
+
+int print_debug = 0;
 
 /*
  * Shared mappings implemented 30.11.1994. It's not fully working yet,
@@ -852,6 +855,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 		struct folio *folio, pgoff_t index, gfp_t gfp, void **shadowp)
 {
 	XA_STATE(xas, &mapping->i_pages, index);
+	XA_STATE(xas_status, &mapping->pages_status, index); //new
 	void *alloced_shadow = NULL;
 	int alloced_order = 0;
 	bool huge;
@@ -860,6 +864,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_FOLIO(folio_test_swapbacked(folio), folio);
 	mapping_set_update(&xas, mapping);
+	mapping_set_update(&xas_status, mapping);  //new
 
 	VM_BUG_ON_FOLIO(index & (folio_nr_pages(folio) - 1), folio);
 	xas_set_order(&xas, index, folio_order(folio));
@@ -876,6 +881,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 		void *entry, *old = NULL;
 
 		xas_lock_irq(&xas);
+		xas_lock_irq(&xas_status); //new
 		xas_for_each_conflict(&xas, entry) {
 			old = entry;
 			if (!xa_is_value(entry)) {
@@ -893,6 +899,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 		/* entry may have changed before we re-acquire the lock */
 		if (alloced_order && (old != alloced_shadow || order != alloced_order)) {
 			xas_destroy(&xas);
+			xas_destroy(&xas_status); //new
 			alloced_order = 0;
 		}
 
@@ -912,9 +919,20 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 		}
 
 		xas_store(&xas, folio);
-		if (xas_error(&xas))
-			goto unlock;
+		if (xas_error(&xas))  
+			goto unlock;     
+		enum page_status status;
 
+		if (!(gfp & __GFP_WRITE) && mapping_use_distributed_support(mapping)) {
+			status = SHARED_PAGE;  //new
+			// if (print_debug) {
+			// 	pr_info("Status changed as SHARED PAGE \n");
+			// 	pr_info("GFP MASK, INDEX %u, %lu", gfp, index);
+			// }
+		}
+		xas_store(&xas_status, xa_mk_value(status)); //new
+		if (xas_error(&xas_status)) //new
+			goto unlock;  //new
 		mapping->nrpages += nr;
 
 		/* hugetlb pages do not participate in page cache accounting */
@@ -927,7 +945,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 
 unlock:
 		xas_unlock_irq(&xas);
-
+		xas_unlock_irq(&xas_status); // new
 		/* split needed, alloc here and retry. */
 		if (split_order) {
 			xas_split_alloc(&xas, old, split_order, gfp);
@@ -936,6 +954,7 @@ unlock:
 			alloced_shadow = old;
 			alloced_order = split_order;
 			xas_reset(&xas);
+			xas_reset(&xas_status); //new
 			continue;
 		}
 
@@ -943,7 +962,7 @@ unlock:
 			break;
 	}
 
-	if (xas_error(&xas))
+	if (xas_error(&xas) || xas_error(&xas_status))
 		goto error;
 
 	trace_mm_filemap_add_to_page_cache(folio);
@@ -2274,6 +2293,100 @@ out:
 }
 EXPORT_SYMBOL(filemap_get_folios_tag);
 
+/*Specifically for writeback*/
+
+static char *get_file_name_from_inode(struct inode *inode)
+{
+    struct dentry *dentry;
+    struct qstr dname;
+    char *filename = NULL;
+
+    /* First, get the dentry for the inode */
+    dentry = d_find_any_alias(inode);
+    if (dentry) {
+        /* We have found the dentry, now get the filename */
+        dname = dentry->d_name;
+        
+        /* Allocate memory for the filename and copy it */
+        filename = kzalloc(dname.len + 1, GFP_KERNEL);
+        if (filename) {
+            memcpy(filename, dname.name, dname.len);
+            filename[dname.len] = '\0'; // Null-terminate the string
+        }
+        dput(dentry);  // Don't forget to release the reference to the dentry
+    }
+
+    return filename;
+}
+
+unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *start,
+			pgoff_t end, xa_mark_t tag, struct folio_batch *fbatch)
+{
+	XA_STATE(xas, &mapping->i_pages, *start);
+	XA_STATE(xas_status, &mapping->pages_status, *start);
+	struct folio *folio;
+	enum page_status status = 0;
+	char *buffer;
+
+	rcu_read_lock();
+	while ((folio = find_get_entry(&xas, end, tag)) != NULL) {
+
+		if (mapping_use_distributed_support(mapping))
+			status = xa_to_value(xas_find(&xas_status, end));
+
+		/*
+		 * Shadow entries should never be tagged, but this iteration
+		 * is lockless so there is a window for page reclaim to evict
+		 * a page we saw tagged. Skip over it.
+		 */
+		if (xa_is_value(folio))
+			continue;
+
+		if (status == MODIFIED) {
+			pr_info("IN CHECKING MODIFIED TAG \n");
+			size_t size = folio_nr_pages(folio) << PAGE_SHIFT;
+			buffer = kmalloc(size, GFP_KERNEL);
+			memcpy_from_file_folio(buffer, folio, folio->index, size);
+
+			struct remote_request req = {
+				.operator='w',
+				.filename=get_file_name_from_inode(mapping->host),
+				.index=folio->index,
+				.size=size,
+				.buffer=buffer
+			};
+			pr_info("Calling the remote... %s \n", buffer);
+
+			call_remote_storage(req);
+
+			pr_info("Mesaage sent \n");
+
+			kfree(buffer);
+		}
+		
+		if (!folio_batch_add(fbatch, folio)) {
+			unsigned long nr = folio_nr_pages(folio);
+			*start = folio->index + nr;
+			goto out;
+		}
+	}
+	/*
+	 * We come here when there is no page beyond @end. We take care to not
+	 * overflow the index @start as it confuses some of the callers. This
+	 * breaks the iteration when there is a page at index -1 but that is
+	 * already broke anyway.
+	 */
+	if (end == (pgoff_t)-1)
+		*start = (pgoff_t)-1;
+	else
+		*start = end + 1;
+out:
+	rcu_read_unlock();
+
+	return folio_batch_count(fbatch);
+}
+EXPORT_SYMBOL(filemap_get_folios_tag_remote);
+
 /*
  * CD/DVDs are error prone. When a medium error occurs, the driver may fail
  * a _large_ part of the i/o request. Imagine the worst scenario:
@@ -2294,6 +2407,32 @@ static void shrink_readahead_size_eio(struct file_ra_state *ra)
 	ra->ra_pages /= 4;
 }
 
+static void print_xarray_elements(struct xarray *xa)
+{
+    unsigned long index;
+    void *entry;
+
+    printk(KERN_INFO "Printing xarray elements:\n");
+
+    xa_for_each(xa, index, entry) {
+        if (!entry) {
+            printk(KERN_INFO "Index %lu: NULL\n", index);
+        } else if (xa_is_err(entry)) {
+            printk(KERN_INFO "Index %lu: Error %d\n",
+                   index, xa_err(entry));
+        } else if (xa_is_value(entry)) {
+            /* This means we stored an integer (enum) using xa_mk_value() */
+            enum page_status val = xa_to_value(entry);
+            /* If you're storing an enum page_status, you can cast it: */
+            /* enum page_status status = (enum page_status)val; */
+            printk(KERN_INFO "Index %lu: Value %d\n", index, val);
+        } else {
+            /* Otherwise, entry is likely a pointer */
+            printk(KERN_INFO "Index %lu: Pointer %p\n", index, entry);
+        }
+    }
+}
+
 /*
  * filemap_get_read_batch - Get a batch of folios for read
  *
@@ -2307,10 +2446,26 @@ static void filemap_get_read_batch(struct address_space *mapping,
 		pgoff_t index, pgoff_t max, struct folio_batch *fbatch)
 {
 	XA_STATE(xas, &mapping->i_pages, index);
+	if (print_debug) pr_info("AAAAAAAAAAAAAAAAAAAA\n");
+	XA_STATE(xas_status, &mapping->pages_status, index);
 	struct folio *folio;
+	if (print_debug) pr_info("BBBBBBBBBBBBBBBBBBBB\n");
 
+	void *val = xas_load(&xas_status);
+	enum page_status status = xa_to_value(val);
+	if (print_debug) {
+		printk(KERN_INFO "After the initializatiooooonnn\n");
+		printk(KERN_INFO "Laeded aaaaaaaaa value  %d\n", status);
+		print_xarray_elements(xas_status.xa);
+	}
 	rcu_read_lock();
-	for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
+	for (folio = xas_load(&xas), val = xas_load(&xas_status); 
+		folio && val; 
+		folio = xas_next(&xas), val = xas_next(&xas_status)) {
+		enum page_status s = xa_to_value(val);
+		if (print_debug) {
+			printk(KERN_INFO "Laeded a value  %d\n", s);
+		}
 		if (xas_retry(&xas, folio))
 			continue;
 		if (xas.xa_index > max || xa_is_value(folio))
@@ -2509,7 +2664,7 @@ static int filemap_readahead(struct kiocb *iocb, struct file *file,
 	return 0;
 }
 
-static int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char* buf) 
+int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char* buf) 
 {
 	struct address_space *mapping = inode->i_mapping;
 	const struct address_space_operations *aops = mapping->a_ops;
@@ -2543,7 +2698,7 @@ static int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t cou
 	}
 	return 0;
 }
-
+EXPORT_SYMBOL_GPL(write_remote_to_pagecache);
 
 static int filemap_get_pages(struct kiocb *iocb, size_t count,
 		struct folio_batch *fbatch, bool need_uptodate)
@@ -2556,16 +2711,32 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
 	struct folio *folio;
 	int err = 0;
 
+	
+	char *tmp_path;
+    char path_buf[256]; 
+	tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
+	if (!IS_ERR(tmp_path) && (strstr(tmp_path, "mamad.sh") != NULL || strstr(tmp_path, "momomo") != NULL)) {
+		printk(KERN_INFO "Remote: temp found");
+		print_debug = 1;
+	} else {
+		print_debug = 0;
+	}
+
 	/* "last_index" is the index of the page beyond the end of the read */
 	last_index = DIV_ROUND_UP(iocb->ki_pos + count, PAGE_SIZE);
 retry:
 	if (fatal_signal_pending(current))
 		return -EINTR;
-		
+	
+	if (print_debug) printk(KERN_INFO "Before reading page cache\n");
 	filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+	if (print_debug) printk(KERN_INFO "After reading page cache\n");
+
 	if (!folio_batch_count(fbatch)) {
 		/*If not in page cache and remote, send request*/
 		if (filp->f_flags & O_REMOTE) {
+			mapping_set_distributed_support(mapping);
+			printk(KERN_INFO "Didn't find in page cache\n");
 			char* buffer;
 			buffer = kmalloc(1024, GFP_KERNEL);
 			if (!buffer) {
@@ -2574,9 +2745,9 @@ retry:
 			}
 			memset(buffer, 0, 1024);
 
-			char *tmp_path;
-			char path_buf[256]; 
-			tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
+			// char *tmp_path;
+			// char path_buf[256]; 
+			// tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
 			char* filename = strrchr(tmp_path, '/');
 			if (filename) 
 				filename++; 
@@ -4064,6 +4235,24 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 }
 EXPORT_SYMBOL(generic_file_direct_write);
 
+int remote_invalidate_folio(struct address_space *mapping, pgoff_t index)
+{
+	XA_STATE(xas_status, &mapping->pages_status, index); //new
+	mapping_set_update(&xas_status, mapping);  //new
+
+	xas_lock_irq(&xas_status); //new
+	enum page_status status = INVALIDATE_PAGE;  //new
+	xas_store(&xas_status, xa_mk_value(status)); //new
+	if (print_debug)
+		pr_info("Status of shared page changed to INVALIDATE \n");
+	xas_unlock_irq(&xas_status); // new
+	if (xas_error(&xas_status)) {
+		return xas_error(&xas_status);
+	}
+	return 0;
+}
+EXPORT_SYMBOL(remote_invalidate_folio);
+
 ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 {
 	struct file *file = iocb->ki_filp;
@@ -4073,6 +4262,21 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 	size_t chunk = mapping_max_folio_size(mapping);
 	long status = 0;
 	ssize_t written = 0;
+
+	char *tmp_path;
+	char path_buf[256]; 
+	tmp_path = d_path(&file->f_path, path_buf, sizeof(path_buf));
+	if (!IS_ERR(tmp_path) && (strstr(tmp_path, "mamad.sh") != NULL || strstr(tmp_path, "momomo") != NULL)) {
+		printk(KERN_INFO "Remote: temp found");
+		print_debug = 1;
+	} else {
+		print_debug = 0;
+	}
+	char* filename = strrchr(tmp_path, '/');
+	if (filename) 
+		filename++; 
+	else 
+		filename = tmp_path; 
 
 	do {
 		struct page *page;
@@ -4086,6 +4290,29 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 retry:
 		offset = pos & (chunk - 1);
 		bytes = min(chunk - offset, bytes);
+
+		if (file->f_flags & O_REMOTE) {
+			mapping_set_distributed_support(mapping);
+			char* buffer;
+			buffer = kmalloc(16, GFP_KERNEL);
+			if (!buffer) {
+				printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
+				return -ENOMEM;
+			}
+			memset(buffer, 0, 16);
+			struct remote_request req = {
+				.filename=filename,
+				.operator='i',
+				.size=bytes,
+				.index=offset,
+				.buffer=buffer
+			};
+			int ret = call_remote_storage(req);
+			if (ret < 0) {
+				pr_info("Error in call remote storage \n");
+			}
+			kfree(buffer);
+		}
 		balance_dirty_pages_ratelimited(mapping);
 
 		/*
@@ -4113,6 +4340,23 @@ retry:
 		offset = offset_in_folio(folio, pos);
 		if (bytes > folio_size(folio) - offset)
 			bytes = folio_size(folio) - offset;
+
+		/*Update flag*/
+		pgoff_t index = pos >> PAGE_SHIFT;
+		XA_STATE(xas_status, &mapping->pages_status, index); //new
+		mapping_set_update(&xas_status, mapping);  //new
+		if (print_debug) {
+			pr_info("Changing status to MODIFIED \n");
+		}
+		xas_lock_irq(&xas_status); //new
+		if (xa_to_value(xas_load(&xas_status)) == SHARED_PAGE) {
+			enum page_status status = MODIFIED;  //new
+			xas_store(&xas_status, xa_mk_value(status)); //new
+			
+			if (print_debug)
+				pr_info("Status of shared page changed to modified \n");
+		}
+		xas_unlock_irq(&xas_status); // new
 
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_folio(folio);
