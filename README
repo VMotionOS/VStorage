@@ -4,7 +4,19 @@
 VRemote Storage consists of 2 parts: the VRemote Storage [kernel module](https://github.com/sabaebrahimi/VRemoteStorage-submodule) and this kernel code. The kernel module runs with the kernel code to simultaneously handle messages between two nodes. 
 The main job is to synchronize the shared PageCache between nodes. 
 
-## How to get started
+### Key Features
+- **Distributed PageCache Support**: Synchronizes file operations between two nodes using a shared PageCache.
+- **User Flags for Remote Operations**: Introduces `O_REMOTE` and `O_ORIGIN` flags for user-level applications to handle remote files seamlessly.
+- **Kernel Module (`server_file_module.c`)**: Provides server-side operations to facilitate file handling and synchronization between nodes.
+
+---
+
+## Setup Instructions
+### Prerequisites
+- A Linux kernel development environment.
+- Two nodes with reachable network connectivity.
+
+
 First, clone this repository, which is the modified kernel version 6.11.6, and the [submodule](https://github.com/sabaebrahimi/VRemoteStorage-submodule). You can change the port and IPs of the nodes by modifying `fs/udp_module.c`:
 ```
 #define VM2_IP {NODE2_IP}
@@ -13,7 +25,7 @@ First, clone this repository, which is the modified kernel version 6.11.6, and t
 ```
 Make the kernel using:
 ```
-make -j 50
+make -j$(nproc)
 ```
 Change the directory to the VRemoteStorage-submodule and change the MakeFile KERNEL_SOURCE with your own directory of the modified kernel:
 ```
@@ -54,3 +66,25 @@ int main() {
         free(buffer);
 }
 ```
+
+## Repository Structure
+
+### 1. Main Kernel Repository
+Contains the modified Linux kernel source code:
+- Changes to the PageCache mechanism for distributed file operations.
+- New flags `O_REMOTE` and `O_ORIGIN` for file management.
+- Network-based file synchronization implementation (`fs/udp_module.c`).
+
+#### Key Modified Files
+- `fs/ext4/inode.c`: Enhancements for writing to the distributed PageCache.
+- `fs/fcntl.c`: Support for additional open flags.
+- `fs/udp_module.c`: Handles communication and file synchronization between nodes.
+- `mm/filemap.c`: Manages PageCache-related operations and remote synchronization.
+
+### 2. Submodule Repository
+Contains `server_file_module.c`, a kernel module that:
+- Acts as a server for remote file synchronization.
+- Handles UDP-based communication between nodes.
+- Manages file-related metadata and operations.
+
+---
