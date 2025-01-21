@@ -1,18 +1,32 @@
-Linux kernel
-============
+# VRemote Storage: In-kernel multi-node file management
 
-There are several guides for kernel developers and users. These guides can
-be rendered in a number of formats, like HTML and PDF. Please read
-Documentation/admin-guide/README.rst first.
+## Overview
+VRemote Storage consists of 2 parts: the VRemote Storage [kernel module](https://github.com/sabaebrahimi/VRemoteStorage-submodule) and this kernel code. The kernel module runs with the kernel code to simultaneously handle messages between two nodes. 
+The main job is to synchronize the shared PageCache between nodes. 
 
-In order to build the documentation, use ``make htmldocs`` or
-``make pdfdocs``.  The formatted documentation can also be read online at:
+## How to get started
+First, clone this repository, which is the modified kernel version 6.11.6, and the [submodule](https://github.com/sabaebrahimi/VRemoteStorage-submodule). You can change the port and IPs of the nodes by modifying `fs/udp_module.c`:
+```
+#define VM2_IP {NODE2_IP}
+#define VM1_IP {NODE1_IP}  
+#define DEST_PORT {YOUR_PORT} 
+```
+Make the kernel using:
+```
+make -j 50
+```
+Change the directory to the VRemoteStorage-submodule and change the MakeFile KERNEL_SOURCE with your own directory of the modified kernel:
+```
+KERNEL_SOURCE := {Your/Path/to/VRemoteStorageKernel}
+```
 
-    https://www.kernel.org/doc/html/latest/
+Also, you can change the port by modifying server_file_module.c:
+```
+#define SERVER_PORT {YOUR_PORT}
+```
 
-There are various text files in the Documentation/ subdirectory,
-several of them using the reStructuredText markup notation.
-
-Please read the Documentation/process/changes.rst file, as it contains the
-requirements for building and running the kernel, and information about
-the problems which may result by upgrading your kernel.
+Save this and make a VRemoteStorage submodule. Start your nodes with VRemoteStorage Kernel and copy `server_file_module.ko` in them. Append `server_file_module.ko` to their kernels using:
+```
+insmod server_file_module.ko
+```
+You should see the message `UDP Server: Listening on port {YOUR PORT}` if everything is done fine. 
