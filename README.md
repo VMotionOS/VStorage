@@ -30,3 +30,27 @@ Save this and make a VRemoteStorage submodule. Start your nodes with VRemoteStor
 insmod server_file_module.ko
 ```
 You should see the message `UDP Server: Listening on port {YOUR PORT}` if everything is done fine. 
+
+To work with remote storage in your userspace applications, you should add `O_REMOTE` flag when opening the file. Also, for opening the files that originally belonged to the node, add `O_ORIGIN` too. Example:
+```c
+#include <stdlib.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#define O_REMOTE   00000020
+#define O_ORIGIN   10000000
+int main() {
+        int fd;
+        fd = open("YOURFILE.txt", O_RDWR | O_REMOTE | O_ORIGIN);
+
+        char* buffer = (char* )malloc(512 * sizeof(char));      
+
+        if (fd < 0) {
+                perror("Error openning file\n");
+                exit(1);
+        }
+        int fsize = read(fd, buffer, 256);
+        printf("file content: %s\n", buffer);
+        free(buffer);
+}
+```
