@@ -2342,7 +2342,7 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 		if (xa_is_value(folio))
 			continue;
 
-		if (status == MODIFIED) {
+		if (status == MODIFIED && !mapping_has_original_file(mapping)) {
 			pr_info("IN CHECKING MODIFIED TAG \n");
 			size_t size = folio_nr_pages(folio) << PAGE_SHIFT;
 			buffer = kmalloc(size, GFP_KERNEL);
@@ -2446,10 +2446,10 @@ static void filemap_get_read_batch(struct address_space *mapping,
 		pgoff_t index, pgoff_t max, struct folio_batch *fbatch)
 {
 	XA_STATE(xas, &mapping->i_pages, index);
-	if (print_debug) pr_info("AAAAAAAAAAAAAAAAAAAA\n");
 	XA_STATE(xas_status, &mapping->pages_status, index);
 	struct folio *folio;
-	if (print_debug) pr_info("BBBBBBBBBBBBBBBBBBBB\n");
+
+	char *filename = get_file_name_from_inode(mapping->host);
 
 	void *val = xas_load(&xas_status);
 	enum page_status status = xa_to_value(val);
@@ -2462,9 +2462,9 @@ static void filemap_get_read_batch(struct address_space *mapping,
 	for (folio = xas_load(&xas), val = xas_load(&xas_status); 
 		folio && val; 
 		folio = xas_next(&xas), val = xas_next(&xas_status)) {
-		enum page_status s = xa_to_value(val);
+		status = xa_to_value(val);
 		if (print_debug) {
-			printk(KERN_INFO "Laeded a value  %d\n", s);
+			printk(KERN_INFO "Laeded a value  %d\n", status);
 		}
 		if (xas_retry(&xas, folio))
 			continue;
@@ -2477,6 +2477,26 @@ static void filemap_get_read_batch(struct address_space *mapping,
 
 		if (unlikely(folio != xas_reload(&xas)))
 			goto put_folio;
+		
+		if (status == INVALIDATE_PAGE) {
+			if (print_debug) pr_info("Entered INVALIDATED_PAGE while reading \n");
+			size_t size = folio_size(folio);
+			char *buffer = kmalloc(size, GFP_KERNEL);
+			struct remote_request req = {
+				.filename=filename,
+				.size=size,
+				.index=index,
+				.buffer=buffer,
+				.operator='r'
+			}; 
+			call_remote_storage(req);
+			memcpy_to_folio(folio, index, buffer, size);
+			xas_store(&xas_status, xa_mk_value(SHARED_PAGE)); 
+			kfree(buffer);
+
+			if (print_debug) pr_info("Copied the buffer to folio \n");
+
+		}
 
 		if (!folio_batch_add(fbatch, folio))
 			break;
@@ -2664,14 +2684,14 @@ static int filemap_readahead(struct kiocb *iocb, struct file *file,
 	return 0;
 }
 
-int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char* buf) 
+int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char *buf) 
 {
 	struct address_space *mapping = inode->i_mapping;
 	const struct address_space_operations *aops = mapping->a_ops;
 
 	if (pos + count > inode->i_sb->s_maxbytes)
 		return -EFBIG;
-
+	inode_lock(inode);
 	while (count) {
 		size_t n = min_t(size_t, count,
 				 PAGE_SIZE - offset_in_page(pos));
@@ -2682,10 +2702,34 @@ int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, cha
 		res = aops->write_begin(NULL, mapping, pos, n, &page, &fsdata);
 		if (res)
 			return res;
+		pr_info("Page %p, pos: %lld, offset pos: %lu, n: %lu, buff_address: %p, task size: %lu", 
+			page, pos, offset_in_page(pos), n, buf, TASK_SIZE);
+		pr_info("Page info:\n"
+        "  Address: %p\n"
+        "  PFN: %lu\n"
+        "  Flags: %lx\n"
+        "  Count: %d\n"
+        "  Mapping: %p\n",
+        page,
+        page_to_pfn(page),
+        page->flags,
+        page_count(page),
+        page->mapping);	
+		pr_info("After lock page\n");
 
 		memcpy_to_page(page, offset_in_page(pos), buf, n);
 
+		pr_info("After unlock page\n");	
+		SetPageUptodate(page);
+
+		pr_info("After memcpy to page");
+		smp_mb();
+		barrier();
 		res = aops->write_end(NULL, mapping, pos, n, n, page, fsdata);
+		barrier();
+		pr_info("After write end\n");
+		smp_mb();
+		pr_info("After smb_mb\n");
 
 		if (res < 0)
 			return res;
@@ -2696,6 +2740,7 @@ int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, cha
 		pos += n;
 		count -= n;
 	}
+	inode_unlock(inode);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(write_remote_to_pagecache);
@@ -2736,6 +2781,9 @@ retry:
 		/*If not in page cache and remote, send request*/
 		if (filp->f_flags & O_REMOTE) {
 			mapping_set_distributed_support(mapping);
+			if (filp->f_flags & O_ORIGIN) {
+				mapping_set_has_original_file(mapping);
+			}
 			printk(KERN_INFO "Didn't find in page cache\n");
 			char* buffer;
 			buffer = kmalloc(1024, GFP_KERNEL);
@@ -2745,9 +2793,6 @@ retry:
 			}
 			memset(buffer, 0, 1024);
 
-			// char *tmp_path;
-			// char path_buf[256]; 
-			// tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
 			char* filename = strrchr(tmp_path, '/');
 			if (filename) 
 				filename++; 
@@ -2775,7 +2820,7 @@ retry:
 		page_cache_sync_readahead(mapping, ra, filp, index,
 				last_index - index);
 		filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
-	}
+	} 
 	if (!folio_batch_count(fbatch)) {
 		if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
 			return -EAGAIN;
@@ -2862,6 +2907,9 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 		if (filp->f_flags & O_REMOTE) {
 			printk(KERN_INFO "Remote: mapping changed to remote");
 			mapping_set_distributed_support(mapping);
+			if (filp->f_flags & O_ORIGIN) {
+				mapping_set_has_original_file(mapping);
+			}
 		} else {
 			printk(KERN_INFO "Remote: Received file, flags: %o", filp->f_flags);
 		}
@@ -4293,6 +4341,9 @@ retry:
 
 		if (file->f_flags & O_REMOTE) {
 			mapping_set_distributed_support(mapping);
+			if (file->f_flags & O_ORIGIN) {
+				mapping_set_has_original_file(mapping);
+			}
 			char* buffer;
 			buffer = kmalloc(16, GFP_KERNEL);
 			if (!buffer) {
