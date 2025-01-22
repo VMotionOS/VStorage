@@ -12,10 +12,12 @@
 #include <linux/uaccess.h>
 #include <linux/string.h>
 #include <linux/inetdevice.h>
-#include <linux/jiffies.h>
+#include <linux/time.h>
+#include <linux/ktime.h>
 
 #define VM2_IP "192.168.123.79"
 #define VM1_IP "192.168.123.78"  
+
 #define DEST_PORT 1104           // Destination UDP port
 struct socket *sock;
 struct sockaddr_in remote_addr = {0};
@@ -77,8 +79,6 @@ static int is_local_ip(uint32_t ip)
                  */
                 if (if_info->ifa_local == ip_network_order) {
                     is_local = 1;  // Mark the IP as local
-                    pr_info("is_local_ip: Match found for IP %pI4 on interface %s\n",
-                            &ip_network_order, dev->name);  // Log the matching interface
                     goto out;  // Exit the loop early if a match is found
                 }
             }
@@ -92,7 +92,6 @@ out:
 
 
 static int remote_storage_init(void) {
-    printk(KERN_INFO "Network module loaded\n");
     int ret;
 
     ret = sock_create_kern(&init_net, AF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock);
@@ -114,12 +113,15 @@ static int remote_storage_init(void) {
 static void remote_storage_exit(void) {
     sock_release(sock);
     if (sock) sock = NULL;
-    printk(KERN_INFO "Network module unloaded\n");
 }
 
 int call_remote_storage(struct remote_request request) {
     char *data;
-    long timeout = msecs_to_jiffies(1000);
+    int retries = 5;  // Number of retries
+    ktime_t start, end;
+    s64 diff;
+
+    start = ktime_get();
 
     data = kmalloc(1024, GFP_KERNEL);
     if (!data) {
@@ -129,54 +131,71 @@ int call_remote_storage(struct remote_request request) {
     sprintf(data, "%s,%ld,%llu,%c,%s", request.filename, request.size,
              request.index, request.operator, request.buffer[0] == '\0' ? "\0" : request.buffer);
 
-    printk(KERN_INFO "Remote: sending data: %s\n", data);
+    // write requesting page cache to remote node
+    if(request.operator == 'r')
+        pr_info("Reading page cache from remote node for %s with size: %ld at index %llu\n", request.filename, request.size, request.index);
+
+    // write requesting page cache to remote node
+    if(request.operator == 'w')
+        pr_info("Writing page cache to remote node for %s with size: %ld at index %llu\n", request.filename, request.size, request.index);
+    
+    // invalidate page cache on remote node
+    if(request.operator == 'i')
+        pr_info("Invalidating page cache on remote node for %s at index %llu\n", request.filename, request.index);
+
     size_t data_len = strlen(data);
     int ret = 0;
 
     //Initialize the socket
     if (!sock) {
-        printk(KERN_INFO "Socket not initialized \n");
         ret = remote_storage_init();
         if (ret < 0) {
             printk(KERN_ERR "Remote: UDP Client: Failed to initialize socket, error %d\n", ret);
             return ret;
         }
-        struct sock *sk = sock->sk;
-        sk->sk_rcvtimeo = timeout;
-
     }
-    printk(KERN_INFO "After Socker Initialization \n");
 
     iov.iov_base = data; // Message data
     iov.iov_len = data_len;
 
     msg.msg_name = &remote_addr; // Set destination address
     msg.msg_namelen = sizeof(remote_addr);
-
+ 
+    
     ret = kernel_sendmsg(sock, &msg, &iov, 1, data_len);
-    pr_info("Remote: Sent message \n");
-
+    
     if (ret < 0) {
-        printk(KERN_ERR "Remote: UDP Client: Failed to send message, error %d\n", ret);
+        printk(KERN_ERR "Remote: Client: Failed to send message, error %d\n", ret);
         goto error;
     }
 
     iov.iov_base = request.buffer;
     iov.iov_len = request.size;
 
-    if(request.operator != 'w') {
-        ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, 0);
-        pr_info("received message: %s", request.buffer);
-        
-        if (ret < 0 && ret != -EAGAIN) {
-            printk(KERN_ERR "Remote: kernel_recvmsg failed: %d\n", ret);
-            goto error;
-        } else {
+    if(request.operator == 'r') {
+        while (retries--) {
+            ret = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len, MSG_DONTWAIT);
             if (ret > 0) {
                 request.buffer[ret] = '\0';
+                pr_info("received message: %s", request.buffer);
+                break;
+            } else if (ret == -EAGAIN || ret == -EWOULDBLOCK) {
+                if (retries > 0) {
+                    udelay(1000);  // Wait 1ms before retry
+                    continue;
+                }
+                ret = -ETIMEDOUT;
+            } else {
+                printk(KERN_ERR "Remote: kernel_recvmsg failed: %d\n", ret);
+                break;
             }
         }
     }
+    end = ktime_get();
+
+    diff = ktime_to_ns(ktime_sub(end, start));
+
+    pr_info("Time taken to send message: %lld ns + %d retries\n", diff, retries);
 
 error:
     kfree(data);

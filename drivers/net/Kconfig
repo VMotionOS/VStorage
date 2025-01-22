@@ -560,6 +560,8 @@ source "drivers/net/ppp/Kconfig"
 
 source "drivers/net/slip/Kconfig"
 
+source "drivers/net/remote_storage/Kconfig"
+
 source "drivers/s390/net/Kconfig"
 
 source "drivers/net/usb/Kconfig"

@@ -293,7 +293,7 @@ static inline int mapping_use_distributed_support(struct address_space *mapping)
 }
 
 static inline void mapping_set_has_original_file(struct address_space *mapping)
-{
+{	
 	set_bit(AS_HAS_ORIGINAL_FILE, &mapping->flags);
 }
 

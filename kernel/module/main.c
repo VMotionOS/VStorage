@@ -2031,8 +2031,8 @@ static void module_augment_kernel_taints(struct module *mod, struct load_info *i
 
 	if (!get_modinfo(info, "intree")) {
 		if (!test_taint(TAINT_OOT_MODULE))
-			pr_warn("%s: loading out-of-tree module taints kernel.\n",
-				mod->name);
+			// pr_warn("%s: loading out-of-tree module taints kernel.\n",
+			// 	mod->name);
 		add_taint_module(mod, TAINT_OOT_MODULE, LOCKDEP_STILL_OK);
 	}
 

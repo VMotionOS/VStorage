@@ -921,16 +921,14 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 		xas_store(&xas, folio);
 		if (xas_error(&xas))  
 			goto unlock;     
-		enum page_status status;
+		enum page_status status = 1;
 
 		if (!(gfp & __GFP_WRITE) && mapping_use_distributed_support(mapping)) {
 			status = SHARED_PAGE;  //new
-			// if (print_debug) {
-			// 	pr_info("Status changed as SHARED PAGE \n");
-			// 	pr_info("GFP MASK, INDEX %u, %lu", gfp, index);
-			// }
 		}
+
 		xas_store(&xas_status, xa_mk_value(status)); //new
+
 		if (xas_error(&xas_status)) //new
 			goto unlock;  //new
 		mapping->nrpages += nr;
@@ -2331,8 +2329,9 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 	rcu_read_lock();
 	while ((folio = find_get_entry(&xas, end, tag)) != NULL) {
 
-		if (mapping_use_distributed_support(mapping))
+		if (mapping_use_distributed_support(mapping)){
 			status = xa_to_value(xas_find(&xas_status, end));
+		}
 
 		/*
 		 * Shadow entries should never be tagged, but this iteration
@@ -2343,7 +2342,6 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 			continue;
 
 		if (status == MODIFIED && !mapping_has_original_file(mapping)) {
-			pr_info("IN CHECKING MODIFIED TAG \n");
 			size_t size = folio_nr_pages(folio) << PAGE_SHIFT;
 			buffer = kmalloc(size, GFP_KERNEL);
 			memcpy_from_file_folio(buffer, folio, folio->index, size);
@@ -2355,11 +2353,10 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 				.size=size,
 				.buffer=buffer
 			};
-			pr_info("Calling the remote... %s \n", buffer);
+			pr_info("Start Writing Back to Origin Node\n");
 
 			call_remote_storage(req);
-
-			pr_info("Mesaage sent \n");
+			xas_store(&xas_status, xa_mk_value(SHARED_PAGE)); 
 
 			kfree(buffer);
 		}
@@ -2698,38 +2695,20 @@ int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, cha
 		struct page *page;
 		void *fsdata = NULL;
 		int res;
-		pr_info("Before write begin\n");
 		res = aops->write_begin(NULL, mapping, pos, n, &page, &fsdata);
 		if (res)
 			return res;
-		pr_info("Page %p, pos: %lld, offset pos: %lu, n: %lu, buff_address: %p, task size: %lu", 
-			page, pos, offset_in_page(pos), n, buf, TASK_SIZE);
-		pr_info("Page info:\n"
-        "  Address: %p\n"
-        "  PFN: %lu\n"
-        "  Flags: %lx\n"
-        "  Count: %d\n"
-        "  Mapping: %p\n",
-        page,
-        page_to_pfn(page),
-        page->flags,
-        page_count(page),
-        page->mapping);	
-		pr_info("After lock page\n");
+
 
 		memcpy_to_page(page, offset_in_page(pos), buf, n);
 
-		pr_info("After unlock page\n");	
 		SetPageUptodate(page);
 
-		pr_info("After memcpy to page");
 		smp_mb();
 		barrier();
 		res = aops->write_end(NULL, mapping, pos, n, n, page, fsdata);
 		barrier();
-		pr_info("After write end\n");
 		smp_mb();
-		pr_info("After smb_mb\n");
 
 		if (res < 0)
 			return res;
@@ -2761,8 +2740,7 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
     char path_buf[256]; 
 	tmp_path = d_path(&filp->f_path, path_buf, sizeof(path_buf));
 	if (!IS_ERR(tmp_path) && (strstr(tmp_path, "mamad.sh") != NULL || strstr(tmp_path, "momomo") != NULL)) {
-		printk(KERN_INFO "Remote: temp found");
-		print_debug = 1;
+		print_debug = 0;
 	} else {
 		print_debug = 0;
 	}
@@ -2781,37 +2759,38 @@ retry:
 		/*If not in page cache and remote, send request*/
 		if (filp->f_flags & O_REMOTE) {
 			mapping_set_distributed_support(mapping);
-			if (filp->f_flags & O_ORIGIN) {
-				mapping_set_has_original_file(mapping);
-			}
-			printk(KERN_INFO "Didn't find in page cache\n");
-			char* buffer;
-			buffer = kmalloc(1024, GFP_KERNEL);
-			if (!buffer) {
-				printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
-				return -ENOMEM;
-			}
-			memset(buffer, 0, 1024);
+			if (!(filp->f_flags & O_ORIGIN)) {
+				printk(KERN_INFO "Didn't find in page cache\n");
+				char* buffer;
+				buffer = kmalloc(1024, GFP_KERNEL);
+				if (!buffer) {
+					printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
+					return -ENOMEM;
+				}
+				memset(buffer, 0, 1024);
 
-			char* filename = strrchr(tmp_path, '/');
-			if (filename) 
-				filename++; 
-			else 
-				filename = tmp_path; 
-			struct remote_request req = {
-				.filename=filename,
-				.size=count,
-				.index=index,
-				.buffer=buffer,
-				.operator='r'
-			};
-			err = call_remote_storage(req);
-			if (err >= 0) {
-				struct inode *inode = filp->f_inode;
-				//if no error, write to page cache
-				write_remote_to_pagecache(inode, index, count, buffer);
-			}  else {
-				goto err;
+				char* filename = strrchr(tmp_path, '/');
+				if (filename) 
+					filename++; 
+				else 
+					filename = tmp_path; 
+				struct remote_request req = {
+					.filename=filename,
+					.size=count,
+					.index=index,
+					.buffer=buffer,
+					.operator='r'
+				};
+				err = call_remote_storage(req);
+				if (err >= 0) {
+					struct inode *inode = filp->f_inode;
+					//if no error, write to page cache
+					write_remote_to_pagecache(inode, index, count, buffer);
+				}  else {
+					goto err;
+				}
+			}else{
+				mapping_set_has_original_file(mapping);
 			}
 		}
 		
@@ -2905,13 +2884,10 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 
 	if (!IS_ERR(tmp_path) && strstr(tmp_path, "mamad.sh") != NULL) {
 		if (filp->f_flags & O_REMOTE) {
-			printk(KERN_INFO "Remote: mapping changed to remote");
 			mapping_set_distributed_support(mapping);
 			if (filp->f_flags & O_ORIGIN) {
 				mapping_set_has_original_file(mapping);
 			}
-		} else {
-			printk(KERN_INFO "Remote: Received file, flags: %o", filp->f_flags);
 		}
 	}
 
@@ -4283,23 +4259,22 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 }
 EXPORT_SYMBOL(generic_file_direct_write);
 
-int remote_invalidate_folio(struct address_space *mapping, pgoff_t index)
+int remote_update_status_folio(struct address_space *mapping, pgoff_t index, enum page_status status)
 {
 	XA_STATE(xas_status, &mapping->pages_status, index); //new
 	mapping_set_update(&xas_status, mapping);  //new
 
 	xas_lock_irq(&xas_status); //new
-	enum page_status status = INVALIDATE_PAGE;  //new
 	xas_store(&xas_status, xa_mk_value(status)); //new
 	if (print_debug)
-		pr_info("Status of shared page changed to INVALIDATE \n");
+		pr_info("Status of page changed to %d \n", status);
 	xas_unlock_irq(&xas_status); // new
 	if (xas_error(&xas_status)) {
 		return xas_error(&xas_status);
 	}
 	return 0;
 }
-EXPORT_SYMBOL(remote_invalidate_folio);
+EXPORT_SYMBOL(remote_update_status_folio);
 
 ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 {
@@ -4312,11 +4287,10 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 	ssize_t written = 0;
 
 	char *tmp_path;
-	char path_buf[256]; 
+	char path_buf[256];
 	tmp_path = d_path(&file->f_path, path_buf, sizeof(path_buf));
 	if (!IS_ERR(tmp_path) && (strstr(tmp_path, "mamad.sh") != NULL || strstr(tmp_path, "momomo") != NULL)) {
-		printk(KERN_INFO "Remote: temp found");
-		print_debug = 1;
+		print_debug = 0;
 	} else {
 		print_debug = 0;
 	}
@@ -4338,32 +4312,7 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 retry:
 		offset = pos & (chunk - 1);
 		bytes = min(chunk - offset, bytes);
-
-		if (file->f_flags & O_REMOTE) {
-			mapping_set_distributed_support(mapping);
-			if (file->f_flags & O_ORIGIN) {
-				mapping_set_has_original_file(mapping);
-			}
-			char* buffer;
-			buffer = kmalloc(16, GFP_KERNEL);
-			if (!buffer) {
-				printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
-				return -ENOMEM;
-			}
-			memset(buffer, 0, 16);
-			struct remote_request req = {
-				.filename=filename,
-				.operator='i',
-				.size=bytes,
-				.index=offset,
-				.buffer=buffer
-			};
-			int ret = call_remote_storage(req);
-			if (ret < 0) {
-				pr_info("Error in call remote storage \n");
-			}
-			kfree(buffer);
-		}
+		
 		balance_dirty_pages_ratelimited(mapping);
 
 		/*
@@ -4392,22 +4341,93 @@ retry:
 		if (bytes > folio_size(folio) - offset)
 			bytes = folio_size(folio) - offset;
 
-		/*Update flag*/
-		pgoff_t index = pos >> PAGE_SHIFT;
-		XA_STATE(xas_status, &mapping->pages_status, index); //new
+		/*Do based on status*/
+
+		XA_STATE(xas_status, &mapping->pages_status, offset); //new
 		mapping_set_update(&xas_status, mapping);  //new
-		if (print_debug) {
-			pr_info("Changing status to MODIFIED \n");
-		}
-		xas_lock_irq(&xas_status); //new
-		if (xa_to_value(xas_load(&xas_status)) == SHARED_PAGE) {
-			enum page_status status = MODIFIED;  //new
-			xas_store(&xas_status, xa_mk_value(status)); //new
+		
+		if (file->f_flags & O_REMOTE) {
+			xas_lock_irq(&xas_status); //new
+			enum page_status status = xa_to_value(xas_load(&xas_status));
+
+			mapping_set_distributed_support(mapping);
 			
-			if (print_debug)
-				pr_info("Status of shared page changed to modified \n");
+			if (file->f_flags & O_ORIGIN) {
+				mapping_set_has_original_file(mapping);
+			}
+
+			if (status == SHARED_PAGE) {
+
+				char* buffer;
+				buffer = kmalloc(16, GFP_KERNEL);
+				if (!buffer) {
+					return -ENOMEM;
+				}
+				memset(buffer, 0, 16);
+				struct remote_request req = {
+					.filename=filename,
+					.operator='i',
+					.size=bytes,
+					.index=offset,
+					.buffer=buffer
+				};
+
+				int ret = call_remote_storage(req);
+				if (ret < 0) {
+					pr_info("Error in call remote storage \n");
+				}
+				kfree(buffer);
+
+				xas_store(&xas_status, xa_mk_value(MODIFIED)); //new
+				/*Update flag*/
+				if (print_debug) {
+					pr_info("Changing status to MODIFIED \n");
+				}
+
+			} else if (status == MODIFIED) {
+				;
+			} else {
+				if(!mapping_has_original_file(mapping)){
+					size_t size = folio_size(folio);
+					char *buffer = kmalloc(size, GFP_KERNEL);
+					struct remote_request req1 = {
+						.filename=filename,
+						.size=size,
+						.index=offset,
+						.buffer=buffer,
+						.operator='r'
+					}; 
+					call_remote_storage(req1);
+					memcpy_to_folio(folio, offset, buffer, size);
+					kfree(buffer);
+
+					buffer = kmalloc(16, GFP_KERNEL);
+					if (!buffer) {
+						printk(KERN_ERR "Remote: Failed to allocate memory for buffer\n");
+						return -ENOMEM;
+					}
+					memset(buffer, 0, 16);
+					struct remote_request req2 = {
+						.filename=filename,
+						.operator='i',
+						.size=bytes,
+						.index=offset,
+						.buffer=buffer
+					};
+					int ret = call_remote_storage(req2);
+					if (ret < 0) {
+						pr_info("Error in call remote storage \n");
+					}
+					kfree(buffer);
+					xas_store(&xas_status, xa_mk_value(MODIFIED)); //new
+					/*Update flag*/
+					if (print_debug) {
+						pr_info("Changing status to MODIFIED \n");
+					}
+				}
+			}
+			xas_unlock_irq(&xas_status); // new
 		}
-		xas_unlock_irq(&xas_status); // new
 
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_folio(folio);

@@ -3026,7 +3026,7 @@ struct remote_response {
 };
 
 enum page_status {
-	SHARED_PAGE=1,
+	SHARED_PAGE=2,
 	MODIFIED,
 	INVALIDATE_PAGE
 };
@@ -3035,7 +3035,7 @@ enum page_status {
 extern int call_remote_storage(struct remote_request request);
 
 /*fs/filemap.c  -- fs support for changing to INVALIDATE*/
-extern int remote_invalidate_folio(struct address_space *mapping, pgoff_t index);
+extern int remote_update_status_folio(struct address_space *mapping, pgoff_t index, enum page_status status);
 
 /*fs/filemap.c  -- fs support for writing string into pagecache*/
 extern int write_remote_to_pagecache(struct inode *inode, loff_t pos, size_t count, char* buf); 

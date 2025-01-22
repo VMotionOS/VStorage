@@ -1,0 +1,7 @@
+config REMOTE_STORAGE_SERVER
+        bool "Remote Storage Server"  # Changed from tristate to bool
+        depends on NET && INET
+        default y  # Add this line to build it by default
+        help
+          This module implements a UDP server for remote storage operations.
+

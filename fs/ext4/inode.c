@@ -3043,14 +3043,12 @@ static int ext4_da_do_write_end(struct address_space *mapping,
 	loff_t old_size = inode->i_size;
 	bool disksize_changed = false;
 	loff_t new_i_size;
-		if (print_mamad) pr_info("300000466666\n");
 
 	if (unlikely(!folio_buffers(folio))) {
 		folio_unlock(folio);
 		folio_put(folio);
 		return -EIO;
 	}
-	if (print_mamad) pr_info("30000055544444\n");
 	/*
 	 * block_write_end() will mark the inode as dirty with I_DIRTY_PAGES
 	 * flag, which all that's needed to trigger page writeback.
@@ -3058,7 +3056,6 @@ static int ext4_da_do_write_end(struct address_space *mapping,
 	copied = block_write_end(NULL, mapping, pos, len, copied,
 			&folio->page, NULL);
 	new_i_size = pos + copied;
-	if (print_mamad) pr_info("30000066611111\n");
 
 	/*
 	 * It's important to update i_size while still holding folio lock,
@@ -3080,26 +3077,19 @@ static int ext4_da_do_write_end(struct address_space *mapping,
 
 		i_size_write(inode, new_i_size);
 		end = (new_i_size - 1) & (PAGE_SIZE - 1);
-		if (print_mamad) pr_info("300000888888333333\n");
 		if (copied && ext4_da_should_update_i_disksize(folio, end)) {
-			if (print_mamad) pr_info("3000008888855555\n");
 			ext4_update_i_disksize(inode, new_i_size);
 			disksize_changed = true;
-			if (print_mamad) pr_info("300008888888888888888888\n");
 		}
 	}
 
 	folio_unlock(folio);
 	folio_put(folio);
-	if (print_mamad) pr_info("30000099994444444\n");
 	if (old_size < pos) {
-		if (print_mamad) pr_info("30000099996666666\n");
 		pagecache_isize_extended(inode, old_size, pos);
-		if (print_mamad) pr_info("300000999988888888888\n");
 	}
 
 	if (disksize_changed) {
-		if (print_mamad) pr_info("300000999999999999999\n");
 		handle_t *handle;
 
 		handle = ext4_journal_start(inode, EXT4_HT_INODE, 2);
@@ -3107,9 +3097,7 @@ static int ext4_da_do_write_end(struct address_space *mapping,
 			return PTR_ERR(handle);
 		ext4_mark_inode_dirty(handle, inode);
 		ext4_journal_stop(handle);
-		if (print_mamad) pr_info("311111100007777\n");
 	}
-	if (print_mamad) pr_info("31111111111111111111111\n");
 	return copied;
 }
 
@@ -3129,12 +3117,10 @@ static int ext4_da_write_end(struct file *file,
 	} else {
 		print_mamad = 0;
 	}
-	if (print_mamad) pr_info("Entered write end\n");
 	if (write_mode == FALL_BACK_TO_NONDELALLOC)
 		return ext4_write_end(file, mapping, pos,
 				      len, copied, &folio->page, fsdata);
 
-	if (print_mamad) pr_info("3111124444\n");
 	
 
 	trace_ext4_da_write_end(inode, pos, len, copied);
@@ -3144,11 +3130,9 @@ static int ext4_da_write_end(struct file *file,
 	    ext4_has_inline_data(inode))
 		return ext4_write_inline_data_end(inode, pos, len, copied,
 						  folio);
-	if (print_mamad) pr_info("311113333334444\n");
 
 	if (unlikely(copied < len) && !folio_test_uptodate(folio))
 		copied = 0;
-	if (print_mamad) pr_info("3111133338888888\n");
 	
 
 	return ext4_da_do_write_end(mapping, pos, len, copied, folio);
