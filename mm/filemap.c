@@ -50,6 +50,8 @@
 #include <asm/tlbflush.h>
 #include <linux/highmem.h>
 #include "internal.h"
+#include <linux/time.h>
+#include <linux/ktime.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
@@ -2325,6 +2327,8 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 	struct folio *folio;
 	enum page_status status = 0;
 	char *buffer;
+    ktime_t tstart, tend;
+    s64 diff;
 
 	rcu_read_lock();
 	while ((folio = find_get_entry(&xas, end, tag)) != NULL) {
@@ -2342,6 +2346,7 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 			continue;
 
 		if (status == MODIFIED && !mapping_has_original_file(mapping)) {
+			tstart = ktime_get();
 			size_t size = folio_nr_pages(folio) << PAGE_SHIFT;
 			buffer = kmalloc(size, GFP_KERNEL);
 			memcpy_from_file_folio(buffer, folio, folio->index, size);
@@ -2359,6 +2364,10 @@ unsigned filemap_get_folios_tag_remote(struct address_space *mapping, pgoff_t *s
 			xas_store(&xas_status, xa_mk_value(SHARED_PAGE)); 
 
 			kfree(buffer);
+			tend = ktime_get();
+			diff = ktime_to_ns(ktime_sub(tend, tstart));
+			pr_info("Time taken to writeback in filemap_get_folios_tag_remote: %lld ns\n", diff);
+
 		}
 		
 		if (!folio_batch_add(fbatch, folio)) {
@@ -2445,6 +2454,8 @@ static void filemap_get_read_batch(struct address_space *mapping,
 	XA_STATE(xas, &mapping->i_pages, index);
 	XA_STATE(xas_status, &mapping->pages_status, index);
 	struct folio *folio;
+    ktime_t start, end;
+    s64 diff;
 
 	char *filename = get_file_name_from_inode(mapping->host);
 
@@ -2475,7 +2486,10 @@ static void filemap_get_read_batch(struct address_space *mapping,
 		if (unlikely(folio != xas_reload(&xas)))
 			goto put_folio;
 		
+
 		if (status == INVALIDATE_PAGE) {
+			start = ktime_get();
+
 			if (print_debug) pr_info("Entered INVALIDATED_PAGE while reading \n");
 			size_t size = folio_size(folio);
 			char *buffer = kmalloc(size, GFP_KERNEL);
@@ -2492,6 +2506,10 @@ static void filemap_get_read_batch(struct address_space *mapping,
 			kfree(buffer);
 
 			if (print_debug) pr_info("Copied the buffer to folio \n");
+			
+			end = ktime_get();
+			diff = ktime_to_ns(ktime_sub(end, start));
+			pr_info("Time taken to read in filemap_get_read_batch: %lld ns\n", diff);
 
 		}
 
@@ -2734,7 +2752,8 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
 	pgoff_t last_index;
 	struct folio *folio;
 	int err = 0;
-
+ 	ktime_t start, end;
+    s64 diff;
 	
 	char *tmp_path;
     char path_buf[256]; 
@@ -2757,7 +2776,11 @@ retry:
 
 	if (!folio_batch_count(fbatch)) {
 		/*If not in page cache and remote, send request*/
+		   
+
+
 		if (filp->f_flags & O_REMOTE) {
+			start = ktime_get();
 			mapping_set_distributed_support(mapping);
 			if (!(filp->f_flags & O_ORIGIN)) {
 				printk(KERN_INFO "Didn't find in page cache\n");
@@ -2792,7 +2815,12 @@ retry:
 			}else{
 				mapping_set_has_original_file(mapping);
 			}
+			end = ktime_get();
+			diff = ktime_to_ns(ktime_sub(end, start));
+			pr_info("Time taken to read in filemap_get_pages: %lld ns\n", diff);
 		}
+
+
 		
 		if (iocb->ki_flags & IOCB_NOIO)
 			return -EAGAIN;
@@ -4285,6 +4313,8 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 	size_t chunk = mapping_max_folio_size(mapping);
 	long status = 0;
 	ssize_t written = 0;
+    ktime_t start, end;
+    s64 diff;
 
 	char *tmp_path;
 	char path_buf[256];
@@ -4357,6 +4387,7 @@ retry:
 			}
 
 			if (status == SHARED_PAGE) {
+    			start = ktime_get();
 
 				char* buffer;
 				buffer = kmalloc(16, GFP_KERNEL);
@@ -4383,10 +4414,15 @@ retry:
 				if (print_debug) {
 					pr_info("Changing status to MODIFIED \n");
 				}
+				end = ktime_get();
+				diff = ktime_to_ns(ktime_sub(end, start));
+				pr_info("Time taken to write in generic_perform_write for Invalidation: %lld ns\n", diff);
+
 
 			} else if (status == MODIFIED) {
 				;
 			} else {
+				start = ktime_get();
 				if(!mapping_has_original_file(mapping)){
 					size_t size = folio_size(folio);
 					char *buffer = kmalloc(size, GFP_KERNEL);
@@ -4424,6 +4460,10 @@ retry:
 					if (print_debug) {
 						pr_info("Changing status to MODIFIED \n");
 					}
+					end = ktime_get();
+					diff = ktime_to_ns(ktime_sub(end, start));
+					pr_info("Time taken to write in generic_perform_write for R + I: %lld ns\n", diff);
+
 				}
 			}
 			xas_unlock_irq(&xas_status); // new

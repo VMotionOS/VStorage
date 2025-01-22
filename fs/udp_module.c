@@ -195,7 +195,7 @@ int call_remote_storage(struct remote_request request) {
 
     diff = ktime_to_ns(ktime_sub(end, start));
 
-    pr_info("Time taken to send message: %lld ns + %d retries\n", diff, retries);
+    pr_info("Time taken to send message: %lld ns + %d retries\n", diff, 5 - retries);
 
 error:
     kfree(data);
