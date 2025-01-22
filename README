@@ -1,90 +1,158 @@
-# VRemote Storage: In-kernel multi-node file management
+# VRemote Storage: Distributed PageCache Driver for Linux
+
+[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
 ## Overview
-VRemote Storage consists of 2 parts: the VRemote Storage [kernel module](https://github.com/sabaebrahimi/VRemoteStorage-submodule) and this kernel code. The kernel module runs with the kernel code to simultaneously handle messages between two nodes. 
-The main job is to synchronize the shared PageCache between nodes. 
+VRemote Storage is a Linux kernel driver that enables distributed PageCache management across multiple nodes. It implements the MSI (Modified-Shared-Invalid) protocol for cache coherency and operates directly within the Linux kernel as a network device driver.
 
-### Key Features
-- **Distributed PageCache Support**: Synchronizes file operations between two nodes using a shared PageCache.
-- **User Flags for Remote Operations**: Introduces `O_REMOTE` and `O_ORIGIN` flags for user-level applications to handle remote files seamlessly.
-- **Kernel Module (`server_file_module.c`)**: Provides server-side operations to facilitate file handling and synchronization between nodes.
+## Features
+- 🔄 Distributed PageCache with MSI protocol
+- 🚀 Zero-copy data transfer between nodes
+- 🔒 Cache coherency management
+- 🛠 User-level remote operation flags (`O_REMOTE`, `O_ORIGIN`)
+- 📡 Efficient network communication
 
----
+## Quick Start
 
-## Setup Instructions
 ### Prerequisites
-- A Linux kernel development environment.
-- Two nodes with reachable network connectivity.
+- Linux kernel development environment
+- Two networked nodes
+- Root access on both systems
 
+## Build Instructions
 
-First, clone this repository, which is the modified kernel version 6.11.6, and the [submodule](https://github.com/sabaebrahimi/VRemoteStorage-submodule). You can change the port and IPs of the nodes by modifying `fs/udp_module.c`:
+1. Clone the repository:
+```bash
+git clone https://github.com/VMotionOS/VStorage
+cd VStorage
 ```
-#define VM2_IP {NODE2_IP}
-#define VM1_IP {NODE1_IP}  
-#define DEST_PORT {YOUR_PORT} 
+
+2. Configure node IPs in `drivers/net/remote_storage/remote_storage.h`:
+```c
+#define NODE1_IP "192.168.123.78"
+#define NODE2_IP "192.168.123.79"
+#define REMOTE_PORT 1104
 ```
-Make the kernel using:
+
+3. Configure kernel:
+```bash
+make menuconfig
+# Enable: 
+#   Networking support -> 
+#     Remote Storage driver (NEW)
+#   Select 'y' for built-in version by default is this
 ```
+
+4. Build the kernel:
+```bash
 make -j$(nproc)
 ```
-Change the directory to the VRemoteStorage-submodule and change the MakeFile KERNEL_SOURCE with your own directory of the modified kernel:
-```
-KERNEL_SOURCE := {Your/Path/to/VRemoteStorageKernel}
+
+5. Install modules and kernel:
+```bash
+sudo make modules_install
+sudo make install
 ```
 
-Also, you can change the port by modifying server_file_module.c:
-```
-#define SERVER_PORT {YOUR_PORT}
+6. Update GRUB and reboot:
+```bash
+sudo update-grub
+sudo reboot
 ```
 
-Save this and make a VRemoteStorage submodule. Start your nodes with VRemoteStorage Kernel and copy `server_file_module.ko` in them. Append `server_file_module.ko` to their kernels using:
+7. After reboot, verify the driver is loaded:
+```bash
+dmesg | grep "Remote Storage"
 ```
-insmod server_file_module.ko
-```
-You should see the message `UDP Server: Listening on port {YOUR PORT}` if everything is done fine. 
 
-To work with remote storage in your userspace applications, you should add `O_REMOTE` flag when opening the file. Also, for opening the files that originally belonged to the node, add `O_ORIGIN` too. Example:
+## Usage Example
+
 ```c
-#include <stdlib.h>
-#include <stdio.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <stdio.h>
+
 #define O_REMOTE   00000020
 #define O_ORIGIN   10000000
+
 int main() {
-        int fd;
-        fd = open("YOURFILE.txt", O_RDWR | O_REMOTE | O_ORIGIN);
+    int fd = open("myfile.txt", O_RDWR | O_REMOTE | O_ORIGIN);
+    if (fd < 0) {
+        perror("Failed to open file");
+        return 1;
+    }
 
-        char* buffer = (char* )malloc(512 * sizeof(char));      
-
-        if (fd < 0) {
-                perror("Error openning file\n");
-                exit(1);
-        }
-        int fsize = read(fd, buffer, 256);
-        printf("file content: %s\n", buffer);
-        free(buffer);
+    char buffer[512];
+    ssize_t bytes = read(fd, buffer, sizeof(buffer));
+    printf("Read %zd bytes\n", bytes);
+    
+    close(fd);
+    return 0;
 }
 ```
 
-## Repository Structure
+## Architecture
 
-### 1. Main Kernel Repository
-Contains the modified Linux kernel source code:
-- Changes to the PageCache mechanism for distributed file operations.
-- New flags `O_REMOTE` and `O_ORIGIN` for file management.
-- Network-based file synchronization implementation (`fs/udp_module.c`).
+### Cache States
+| State | Description | Actions |
+|-------|-------------|---------|
+| Modified | Local changes | Needs writeback |
+| Shared | Synchronized | Read-only access |
+| Invalid | Not available | Must fetch from origin |
 
-#### Key Modified Files
-- `fs/ext4/inode.c`: Enhancements for writing to the distributed PageCache.
-- `fs/fcntl.c`: Support for additional open flags.
-- `fs/udp_module.c`: Handles communication and file synchronization between nodes.
-- `mm/filemap.c`: Manages PageCache-related operations and remote synchronization.
+### Network Protocol
+Message format: `filename,size,index,operator[,data]`
 
-### 2. Submodule Repository
-Contains `server_file_module.c`, a kernel module that:
-- Acts as a server for remote file synchronization.
-- Handles UDP-based communication between nodes.
-- Manages file-related metadata and operations.
+| Operator | Description |
+|----------|-------------|
+| r | Read request |
+| w | Write request |
+| i | Invalidate request |
+
+## Implementation
+
+Key components in `drivers/net/remote_storage/`:
+```
+├── remote_client.c   # Client operations
+├── remote_server.c   # Request handling
+└── remote_storage.h  # Common definitions
+```
+
+Modified kernel files:
+- `mm/filemap.c`: PageCache operations
+- `fs/fcntl.c`: Remote operation flags
+
+## Troubleshooting
+
+### Common Issues
+
+#### Connection Problems
+✔️ Check IP configurations  
+✔️ Verify network connectivity  
+✔️ Ensure port is open  
+
+#### Performance Issues
+✔️ Monitor network latency  
+✔️ Check system resources  
+✔️ Verify cache states  
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the GPL v2 License - see the [LICENSE](LICENSE) file for details.
+
+## Authors
+
+- Amir Noohi
+- Saba Ebrahimi
 
 ---
+
+<sub>Made with ❤️ for the Linux kernel community</sub>
+```
